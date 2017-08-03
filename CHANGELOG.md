@@ -1,4 +1,190 @@
-## 0.7.0 (Early Access; final release March 21th, 2017)
+## 0.7.3 (June 7th, 2017)
+
+SECURITY:
+
+ * Cert auth backend now checks validity of individual certificates: In
+   previous versions of Vault, validity (e.g. expiration) of individual leaf
+   certificates added for authentication was not checked. This was done to make
+   it easier for administrators to control lifecycles of individual
+   certificates added to the backend, e.g. the authentication material being
+   checked was access to that specific certificate's private key rather than
+   all private keys signed by a CA. However, this behavior is often unexpected
+   and as a result can lead to insecure deployments, so we are now validating
+   these certificates as well.
+ * App-ID path salting was skipped in 0.7.1/0.7.2: A regression in 0.7.1/0.7.2
+   caused the HMACing of any App-ID information stored in paths (including
+   actual app-IDs and user-IDs) to be unsalted and written as-is from the API.
+   In 0.7.3 any such paths will be automatically changed to salted versions on
+   access (e.g. login or read); however, if you created new app-IDs or user-IDs
+   in 0.7.1/0.7.2, you may want to consider whether any users with access to
+   Vault's underlying data store may have intercepted these values, and
+   revoke/roll them.
+
+DEPRECATIONS/CHANGES:
+
+ * Step-Down is Forwarded: When a step-down is issued against a non-active node
+   in an HA cluster, it will now forward the request to the active node.
+
+FEATURES:
+
+ * **ed25519 Signing/Verification in Transit with Key Derivation**: The
+   `transit` backend now supports generating
+   [ed25519](https://ed25519.cr.yp.to/) keys for signing and verification
+   functionality. These keys support derivation, allowing you to modify the
+   actual encryption key used by supplying a `context` value.
+ * **Key Version Specification for Encryption in Transit**: You can now specify
+   the version of a key you use to wish to generate a signature, ciphertext, or
+   HMAC. This can be controlled by the `min_encryption_version` key
+   configuration property.
+ * **Replication Primary Discovery (Enterprise)**: Replication primaries will
+   now advertise the addresses of their local HA cluster members to replication
+   secondaries. This helps recovery if the primary active node goes down and
+   neither service discovery nor load balancers are in use to steer clients.
+
+IMPROVEMENTS:
+
+ * api/health: Add Sys().Health() [GH-2805]
+ * audit: Add auth information to requests that error out [GH-2754]
+ * command/auth: Add `-no-store` option that prevents the auth command from
+   storing the returned token into the configured token helper [GH-2809]
+ * core/forwarding: Request forwarding now heartbeats to prevent unused
+   connections from being terminated by firewalls or proxies
+ * plugins/databases: Add MongoDB as an internal database plugin [GH-2698]
+ * storage/dynamodb: Add a method for checking the existence of children, 
+   speeding up deletion operations in the DynamoDB storage backend [GH-2722]
+ * storage/mysql: Add max_parallel parameter to MySQL backend [GH-2760]
+ * secret/databases: Support listing connections [GH-2823]
+ * secret/databases: Support custom renewal statements in Postgres database 
+   plugin [GH-2788]
+ * secret/databases: Use the role name as part of generated credentials
+   [GH-2812]
+ * ui (Enterprise): Transit key and secret browsing UI handle large lists better
+ * ui (Enterprise): root tokens are no longer persisted
+ * ui (Enterprise): support for mounting Database and TOTP secret backends
+ 
+BUG FIXES:
+
+ * auth/app-id: Fix regression causing loading of salts to be skipped
+ * auth/aws: Improve EC2 describe instances performance [GH-2766]
+ * auth/aws: Fix lookup of some instance profile ARNs [GH-2802]
+ * auth/aws: Resolve ARNs to internal AWS IDs which makes lookup at various
+   points (e.g. renewal time) more robust [GH-2814]
+ * auth/aws: Properly honor configured period when using IAM authentication
+   [GH-2825]
+ * auth/aws: Check that a bound IAM principal is not empty (in the current
+   state of the role) before requiring it match the previously authenticated
+   client [GH-2781]
+ * auth/cert: Fix panic on renewal [GH-2749]
+ * auth/cert: Certificate verification for non-CA certs [GH-2761]
+ * core/acl: Prevent race condition when compiling ACLs in some scenarios
+   [GH-2826]
+ * secret/database: Increase wrapping token TTL; in a loaded scenario it could
+   be too short
+ * secret/generic: Allow integers to be set as the value of `ttl` field as the
+   documentation claims is supported [GH-2699]
+ * secret/ssh: Added host key callback to ssh client config [GH-2752]
+ * storage/s3: Avoid a panic when some bad data is returned [GH-2785]
+ * storage/dynamodb: Fix list functions working improperly on Windows [GH-2789]
+ * storage/file: Don't leak file descriptors in some error cases
+ * storage/swift: Fix pre-v3 project/tenant name reading [GH-2803]
+
+## 0.7.2 (May 8th, 2017)
+
+BUG FIXES:
+
+ * audit: Fix auditing entries containing certain kinds of time values
+   [GH-2689]
+
+## 0.7.1 (May 5th, 2017)
+
+DEPRECATIONS/CHANGES:
+
+ * LDAP Auth Backend: Group membership queries will now run as the `binddn`
+   user when `binddn`/`bindpass` are configured, rather than as the
+   authenticating user as was the case previously.
+
+FEATURES:
+
+ * **AWS IAM Authentication**: IAM principals can get Vault tokens
+   automatically, opening AWS-based authentication to users, ECS containers,
+   Lambda instances, and more. Signed client identity information retrieved
+   using the AWS API `sts:GetCallerIdentity` is validated against the AWS STS
+   service before issuing a Vault token. This backend is unified with the
+   `aws-ec2` authentication backend, and allows additional EC2-related
+   restrictions to be applied during the IAM authentication; the previous EC2
+   behavior is also still available. [GH-2441]
+ * **MSSQL Physical Backend**: You can now use Microsoft SQL Server as your
+   Vault physical data store [GH-2546]
+ * **Lease Listing and Lookup**: You can now introspect a lease to get its
+   creation and expiration properties via `sys/leases/lookup`; with `sudo`
+   capability you can also list leases for lookup, renewal, or revocation via
+   that endpoint. Various lease functions (renew, revoke, revoke-prefix,
+   revoke-force) have also been relocated to `sys/leases/`, but they also work
+   at the old paths for compatibility. Reading (but not listing) leases via
+   `sys/leases/lookup` is now a part of the current `default` policy. [GH-2650]
+ * **TOTP Secret Backend**: You can now store multi-factor authentication keys 
+   in Vault and use the API to retrieve time-based one-time use passwords on 
+   demand. The backend can also be used to generate a new key and validate 
+   passwords generated by that key. [GH-2492]
+ * **Database Secret Backend & Secure Plugins (Beta)**: This new secret backend 
+   combines the functionality of the MySQL, PostgreSQL, MSSQL, and Cassandra 
+   backends. It also provides a plugin interface for extendability through 
+   custom databases. [GH-2200]
+
+IMPROVEMENTS:
+
+ * auth/cert: Support for constraints on subject Common Name and DNS/email
+   Subject Alternate Names in certificates [GH-2595]
+ * auth/ldap: Use the binding credentials to search group membership rather
+   than the user credentials [GH-2534]
+ * cli/revoke: Add `-self` option to allow revoking the currently active token
+   [GH-2596]
+ * core: Randomize x coordinate in Shamir shares [GH-2621]
+ * replication: Fix a bug when enabling `approle` on a primary before
+   secondaries were connected
+ * replication: Add heartbeating to ensure firewalls don't kill connections to
+   primaries
+ * secret/pki: Add `no_store` option that allows certificates to be issued
+   without being stored. This removes the ability to look up and/or add to a
+   CRL but helps with scaling to very large numbers of certificates. [GH-2565]
+ * secret/pki: If used with a role parameter, the `sign-verbatim/<role>`
+   endpoint honors the values of `generate_lease`, `no_store`, `ttl` and
+   `max_ttl` from the given role [GH-2593]
+ * secret/pki: Add role parameter `allow_glob_domains` that enables defining
+   names in `allowed_domains` containing `*` glob patterns [GH-2517]
+ * secret/pki: Update certificate storage to not use characters that are not
+   supported on some filesystems [GH-2575]
+ * storage/etcd3: Add `discovery_srv` option to query for SRV records to find
+   servers [GH-2521]
+ * storage/s3: Support `max_parallel` option to limit concurrent outstanding
+   requests [GH-2466]
+ * storage/s3: Use pooled transport for http client [GH-2481]
+ * storage/swift: Allow domain values for V3 authentication [GH-2554]
+ * tidy: Improvements to `auth/token/tidy` and `sys/leases/tidy` to handle more
+   cleanup cases [GH-2452]
+
+BUG FIXES:
+
+ * api: Respect a configured path in Vault's address [GH-2588]
+ * auth/aws-ec2: New bounds added as criteria to allow role creation [GH-2600]
+ * auth/ldap: Don't lowercase groups attached to users [GH-2613]
+ * cli: Don't panic if `vault write` is used with the `force` flag but no path
+   [GH-2674]
+ * core: Help operations should request forward since standbys may not have
+   appropriate info [GH-2677]
+ * replication: Fix enabling secondaries when certain mounts already existed on
+   the primary
+ * secret/mssql: Update mssql driver to support queries with colons [GH-2610]
+ * secret/pki: Don't lowercase O/OU values in certs [GH-2555]
+ * secret/pki: Don't attempt to validate IP SANs if none are provided [GH-2574]
+ * secret/ssh: Don't automatically lowercase principles in issued SSH certs
+   [GH-2591]
+ * storage/consul: Properly handle state events rather than timing out
+   [GH-2548]
+ * storage/etcd3: Ensure locks are released if client is improperly shut down
+   [GH-2526]
+
+## 0.7.0 (March 21th, 2017)
 
 SECURITY:
 

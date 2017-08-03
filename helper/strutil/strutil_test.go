@@ -139,7 +139,7 @@ func TestStrutil_ParseKeyValues(t *testing.T) {
 	input = "key1 = value1, key2	=   "
 	err = ParseKeyValues(input, actual, ",")
 	if err == nil {
-		t.Fatal("expected an error")
+		t.Fatalf("expected an error")
 	}
 	for k, _ := range actual {
 		delete(actual, k)
@@ -148,10 +148,16 @@ func TestStrutil_ParseKeyValues(t *testing.T) {
 	input = "key1 = value1, 	=  value2 "
 	err = ParseKeyValues(input, actual, ",")
 	if err == nil {
-		t.Fatal("expected an error")
+		t.Fatalf("expected an error")
 	}
 	for k, _ := range actual {
 		delete(actual, k)
+	}
+
+	input = "key1"
+	err = ParseKeyValues(input, actual, ",")
+	if err == nil {
+		t.Fatalf("expected an error")
 	}
 }
 
@@ -313,5 +319,14 @@ func TestGlobbedStringsMatch(t *testing.T) {
 		if actual != tc.expect {
 			t.Fatalf("Bad testcase %#v, expected %b, got %b", tc, tc.expect, actual)
 		}
+	}
+}
+
+func TestTrimStrings(t *testing.T) {
+	input := []string{"abc", "123", "abcd ", "123  "}
+	expected := []string{"abc", "123", "abcd", "123"}
+	actual := TrimStrings(input)
+	if !reflect.DeepEqual(expected, actual) {
+		t.Fatalf("Bad TrimStrings: expected:%#v, got:%#v", expected, actual)
 	}
 }

@@ -84,6 +84,13 @@ This endpoint mounts a new secret backend at the given path.
     disabling backend caching respectively. If set on a specific mount, this
     overrides the global defaults.
 
+Additionally, the following options are allowed in Vault open-source, but 
+relevant functionality is only supported in Vault Enterprise:
+
+- `local` `(bool: false)` – Specifies if the secret backend is a local mount  
+  only. Local mounts are not replicated nor (if a secondary) removed by
+  replication.
+
 ### Sample Payload
 
 ```json
@@ -101,7 +108,7 @@ This endpoint mounts a new secret backend at the given path.
 $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
-    --data payload.json \
+    --data @payload.json \
     https://vault.rocks/v1/sys/mounts/my-mount
 ```
 
@@ -183,6 +190,6 @@ This endpoint tunes configuration parameters for a given mount point.
 $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
-    --data payload.json \
+    --data @payload.json \
     https://vault.rocks/v1/sys/mounts/my-mount/tune
 ```

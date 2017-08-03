@@ -48,7 +48,9 @@ type Client struct {
 	Auth
 	Maintenance
 
-	conn             *grpc.ClientConn
+	conn     *grpc.ClientConn
+	dialerrc chan error
+
 	cfg              Config
 	creds            *credentials.TransportCredentials
 	balancer         *simpleBalancer
@@ -75,6 +77,14 @@ func New(cfg Config) (*Client, error) {
 	return newClient(&cfg)
 }
 
+// NewCtxClient creates a client with a context but no underlying grpc
+// connection. This is useful for embedded cases that override the
+// service interface implementations and do not need connection management.
+func NewCtxClient(ctx context.Context) *Client {
+	cctx, cancel := context.WithCancel(ctx)
+	return &Client{ctx: cctx, cancel: cancel}
+}
+
 // NewFromURL creates a new etcdv3 client from a URL.
 func NewFromURL(url string) (*Client, error) {
 	return New(Config{Endpoints: []string{url}})
@@ -85,7 +95,10 @@ func (c *Client) Close() error {
 	c.cancel()
 	c.Watcher.Close()
 	c.Lease.Close()
-	return toErr(c.ctx, c.conn.Close())
+	if c.conn != nil {
+		return toErr(c.ctx, c.conn.Close())
+	}
+	return c.ctx.Err()
 }
 
 // Ctx is a context for "out of band" messages (e.g., for sending
@@ -169,8 +182,9 @@ func parseEndpoint(endpoint string) (proto string, host string, scheme string) {
 	host = url.Host
 	switch url.Scheme {
 	case "http", "https":
-	case "unix":
+	case "unix", "unixs":
 		proto = "unix"
+		host = url.Host + url.Path
 	default:
 		proto, host = "", ""
 	}
@@ -183,7 +197,7 @@ func (c *Client) processCreds(scheme string) (creds *credentials.TransportCreden
 	case "unix":
 	case "http":
 		creds = nil
-	case "https":
+	case "https", "unixs":
 		if creds != nil {
 			break
 		}
@@ -205,6 +219,11 @@ func (c *Client) dialSetupOpts(endpoint string, dopts ...grpc.DialOption) (opts 
 
 	f := func(host string, t time.Duration) (net.Conn, error) {
 		proto, host, _ := parseEndpoint(c.balancer.getEndpoint(host))
+		if host == "" && endpoint != "" {
+			// dialing an endpoint not in the balancer; use
+			// endpoint passed into dial
+			proto, host, _ = parseEndpoint(endpoint)
+		}
 		if proto == "" {
 			return nil, fmt.Errorf("unknown scheme for %q", host)
 		}
@@ -214,7 +233,14 @@ func (c *Client) dialSetupOpts(endpoint string, dopts ...grpc.DialOption) (opts 
 		default:
 		}
 		dialer := &net.Dialer{Timeout: t}
-		return dialer.DialContext(c.ctx, proto, host)
+		conn, err := dialer.DialContext(c.ctx, proto, host)
+		if err != nil {
+			select {
+			case c.dialerrc <- err:
+			default:
+			}
+		}
+		return conn, err
 	}
 	opts = append(opts, grpc.WithDialer(f))
 
@@ -274,17 +300,29 @@ func (c *Client) dial(endpoint string, dopts ...grpc.DialOption) (*grpc.ClientCo
 			tokenMu: &sync.RWMutex{},
 		}
 
-		err := c.getToken(c.ctx)
-		if err != nil {
-			return nil, err
+		ctx := c.ctx
+		if c.cfg.DialTimeout > 0 {
+			cctx, cancel := context.WithTimeout(ctx, c.cfg.DialTimeout)
+			defer cancel()
+			ctx = cctx
 		}
 
-		opts = append(opts, grpc.WithPerRPCCredentials(c.tokenCred))
+		err := c.getToken(ctx)
+		if err != nil {
+			if toErr(ctx, err) != rpctypes.ErrAuthNotEnabled {
+				if err == ctx.Err() && ctx.Err() != c.ctx.Err() {
+					err = grpc.ErrClientConnTimeout
+				}
+				return nil, err
+			}
+		} else {
+			opts = append(opts, grpc.WithPerRPCCredentials(c.tokenCred))
+		}
 	}
 
 	opts = append(opts, c.cfg.DialOptions...)
 
-	conn, err := grpc.Dial(host, opts...)
+	conn, err := grpc.DialContext(c.ctx, host, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -316,11 +354,12 @@ func newClient(cfg *Config) (*Client, error) {
 
 	ctx, cancel := context.WithCancel(baseCtx)
 	client := &Client{
-		conn:   nil,
-		cfg:    *cfg,
-		creds:  creds,
-		ctx:    ctx,
-		cancel: cancel,
+		conn:     nil,
+		dialerrc: make(chan error, 1),
+		cfg:      *cfg,
+		creds:    creds,
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 	if cfg.Username != "" && cfg.Password != "" {
 		client.Username = cfg.Username
@@ -328,8 +367,12 @@ func newClient(cfg *Config) (*Client, error) {
 	}
 
 	client.balancer = newSimpleBalancer(cfg.Endpoints)
+	// use Endpoints[0] so that for https:// without any tls config given, then
+	// grpc will assume the ServerName is in the endpoint.
 	conn, err := client.dial(cfg.Endpoints[0], grpc.WithBalancer(client.balancer))
 	if err != nil {
+		client.cancel()
+		client.balancer.Close()
 		return nil, err
 	}
 	client.conn = conn
@@ -347,9 +390,15 @@ func newClient(cfg *Config) (*Client, error) {
 		case <-waitc:
 		}
 		if !hasConn {
+			err := grpc.ErrClientConnTimeout
+			select {
+			case err = <-client.dialerrc:
+			default:
+			}
 			client.cancel()
+			client.balancer.Close()
 			conn.Close()
-			return nil, grpc.ErrClientConnTimeout
+			return nil, err
 		}
 	}
 
@@ -455,4 +504,12 @@ func toErr(ctx context.Context, err error) error {
 		err = grpc.ErrClientConnClosing
 	}
 	return err
+}
+
+func canceledByCaller(stopCtx context.Context, err error) bool {
+	if stopCtx.Err() == nil || err == nil {
+		return false
+	}
+
+	return err == context.Canceled || err == context.DeadlineExceeded
 }
